@@ -1,0 +1,6 @@
+{
+  "name": "GI-DocScan",
+  "description": "Smart document scanner with camera capture, 4-corner semi-automatic orthorectification, multi-page batch scanning, PDF/JPG export, and optional OCR.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
