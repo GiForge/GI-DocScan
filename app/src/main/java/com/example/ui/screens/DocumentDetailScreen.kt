@@ -44,6 +44,11 @@ import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.runtime.DisposableEffect
+import com.example.util.TtsHelper
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.outlined.StarBorder
@@ -514,6 +519,11 @@ private fun OcrTextTab(
     viewModel: MainViewModel
 ) {
     val context = LocalContext.current
+    val ttsHelper = remember { TtsHelper(context) }
+    DisposableEffect(ttsHelper) {
+        onDispose { ttsHelper.shutdown() }
+    }
+    val isTtsPlaying by ttsHelper.isPlaying.collectAsState()
     var isEditing by remember { mutableStateOf(false) }
     var editableText by remember(document.rawText) { mutableStateOf(document.rawText) }
 
@@ -590,6 +600,24 @@ private fun OcrTextTab(
                         imageVector = Icons.Default.DocumentScanner,
                         contentDescription = "Rifai OCR",
                         tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                // TTS Play/Stop
+                IconButton(
+                    onClick = {
+                        if (isTtsPlaying) {
+                            ttsHelper.stop()
+                        } else {
+                            ttsHelper.speak(editableText)
+                        }
+                    },
+                    modifier = Modifier.testTag("btn_tts_detail")
+                ) {
+                    Icon(
+                        imageVector = if (isTtsPlaying) Icons.Default.Stop else Icons.Default.VolumeUp,
+                        contentDescription = if (isTtsPlaying) "Ferma voce" else "Ascolta con TTS",
+                        tint = if (isTtsPlaying) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary
                     )
                 }
 

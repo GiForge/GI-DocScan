@@ -52,6 +52,29 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.widget.Toast
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.platform.LocalContext
+import com.example.ocr.OcrAnalysisResult
+import com.example.ocr.OcrManager
+import com.example.util.TtsHelper
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -88,10 +111,21 @@ fun OrthorectifyScreen(
     sourceBitmap: Bitmap,
     pageNumber: Int,
     onBack: () -> Unit,
-    onConfirmStraightened: (Bitmap, DocFilter) -> Unit,
+    onConfirmStraightened: (Bitmap, DocFilter, String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     BackHandler { onBack() }
+
+    val context = LocalContext.current
+    val ttsHelper = remember { TtsHelper(context) }
+    DisposableEffect(ttsHelper) {
+        onDispose {
+            ttsHelper.shutdown()
+        }
+    }
+    val isTtsPlaying by ttsHelper.isPlaying.collectAsState()
+    val ttsSpeechRate by ttsHelper.speechRate.collectAsState()
+    val ttsStatusText by ttsHelper.statusText.collectAsState()
 
     val imgWidth = sourceBitmap.width.toFloat()
     val imgHeight = sourceBitmap.height.toFloat()
@@ -102,14 +136,19 @@ fun OrthorectifyScreen(
     }
 
     var selectedFilter by remember { mutableStateOf(DocFilter.BW_DOCUMENT) }
-    var currentTab by remember { mutableIntStateOf(0) } // 0: Corner Adjust, 1: Filter Preview
+    var currentTab by remember { mutableIntStateOf(0) } // 0: Corner Adjust, 1: Filter Preview, 2: OCR & TTS
     var activeDraggingCorner by remember { mutableIntStateOf(-1) } // 0: TL, 1: TR, 2: BR, 3: BL
 
     // Live filter preview state
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isGeneratingPreview by remember { mutableStateOf(false) }
 
-    LaunchedEffect(currentTab, quad, selectedFilter) {
+    // OCR extraction state
+    var ocrResult by remember { mutableStateOf<OcrAnalysisResult?>(null) }
+    var ocrText by remember { mutableStateOf("") }
+    var isProcessingOcr by remember { mutableStateOf(false) }
+
+    LaunchedEffect(currentTab, quad, selectedFilter, ocrResult) {
         if (currentTab == 1) {
             isGeneratingPreview = true
             withContext(Dispatchers.Default) {
@@ -118,6 +157,18 @@ fun OrthorectifyScreen(
                 previewBitmap = filtered
             }
             isGeneratingPreview = false
+        } else if (currentTab == 2) {
+            if (ocrResult == null) {
+                isProcessingOcr = true
+                withContext(Dispatchers.Default) {
+                    val rectified = PerspectiveCorrection.orthorectify(sourceBitmap, quad)
+                    val filtered = ImageProcessing.applyFilter(rectified, selectedFilter)
+                    val result = OcrManager.recognizeTextFromBitmap(filtered)
+                    ocrResult = result
+                    ocrText = result.rawText
+                }
+                isProcessingOcr = false
+            }
         }
     }
 
@@ -160,7 +211,11 @@ fun OrthorectifyScreen(
                         color = Color.White
                     )
                     Text(
-                        text = "Pagina $pageNumber • ${if (currentTab == 0) "Regola 4 Angoli" else "Anteprima Filtri"}",
+                        text = "Pagina $pageNumber • " + when (currentTab) {
+                            0 -> "Regola 4 Angoli"
+                            1 -> "Anteprima Filtri"
+                            else -> "Estrazione Testo & Voce"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFF38BDF8)
                     )
@@ -170,6 +225,7 @@ fun OrthorectifyScreen(
                 IconButton(
                     onClick = {
                         quad = PerspectiveCorrection.fullImageQuad(imgWidth, imgHeight)
+                        ocrResult = null
                     },
                     modifier = Modifier
                         .clip(CircleShape)
@@ -184,7 +240,7 @@ fun OrthorectifyScreen(
                 }
             }
 
-            // Mode Selector Tabs (Regola Angoli vs Anteprima Filtro)
+            // Mode Selector Tabs (Regola Angoli vs Anteprima Filtro vs OCR & Voce)
             TabRow(
                 selectedTabIndex = currentTab,
                 containerColor = Color(0xFF131A29),
@@ -197,14 +253,20 @@ fun OrthorectifyScreen(
                 Tab(
                     selected = currentTab == 0,
                     onClick = { currentTab = 0 },
-                    text = { Text("1. Angoli & Area", fontWeight = FontWeight.SemiBold, fontSize = 12.sp) },
+                    text = { Text("1. Angoli", fontWeight = FontWeight.SemiBold, fontSize = 11.sp) },
                     icon = { Icon(Icons.Default.CropFree, contentDescription = null, modifier = Modifier.size(16.dp)) }
                 )
                 Tab(
                     selected = currentTab == 1,
                     onClick = { currentTab = 1 },
-                    text = { Text("2. Anteprima Filtro", fontWeight = FontWeight.SemiBold, fontSize = 12.sp) },
+                    text = { Text("2. Filtro", fontWeight = FontWeight.SemiBold, fontSize = 11.sp) },
                     icon = { Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                )
+                Tab(
+                    selected = currentTab == 2,
+                    onClick = { currentTab = 2 },
+                    text = { Text("3. Testo OCR & Voce", fontWeight = FontWeight.SemiBold, fontSize = 11.sp) },
+                    icon = { Icon(Icons.Default.DocumentScanner, contentDescription = null, modifier = Modifier.size(16.dp)) }
                 )
             }
 
@@ -631,7 +693,7 @@ fun OrthorectifyScreen(
                         Text("Reset 2%", fontSize = 11.sp, maxLines = 1)
                     }
                 }
-            } else {
+            } else if (currentTab == 1) {
                 // Tab 1: Live Filter Preview of Rectified Result
                 Column(
                     modifier = Modifier
@@ -670,42 +732,311 @@ fun OrthorectifyScreen(
                         }
                     }
                 }
-            }
-
-            // Filter Enhancement Selector (Always visible to switch filters in real-time)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    text = "Scegli Filtro Documento:",
-                    color = Color.LightGray,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+            } else {
+                // Tab 2: OCR Text Extraction + TTS Voice Reading + Sharing with other apps
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .verticalScroll(rememberScrollState())
                 ) {
-                    DocFilter.entries.forEach { filter ->
-                        val isSelected = filter == selectedFilter
+                    if (isProcessingOcr) {
                         Box(
                             modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.12f))
-                                .clickable { selectedFilter = filter }
-                                .padding(vertical = 10.dp),
+                                .fillMaxWidth()
+                                .height(260.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = filter.displayName,
-                                fontSize = 11.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) Color.White else Color.LightGray
-                            )
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                CircularProgressIndicator(color = Color(0xFF00E5FF))
+                                Text(
+                                    text = "Estrazione testo tramite OCR in corso...",
+                                    color = Color.LightGray,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    } else {
+                        // TTS Voice Reader Card
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF131A29)),
+                            border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF00E5FF).copy(alpha = 0.7f))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF00E5FF).copy(alpha = 0.2f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.VolumeUp,
+                                                contentDescription = null,
+                                                tint = Color(0xFF00E5FF),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                        Column {
+                                            Text(
+                                                text = "Sintesi Vocale (TTS)",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp
+                                            )
+                                            Text(
+                                                text = ttsStatusText,
+                                                color = if (isTtsPlaying) Color(0xFF38BDF8) else Color.Gray,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+
+                                    // Speech speed selector pills
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        listOf(0.8f, 1.0f, 1.2f).forEach { rate ->
+                                            val isSel = (ttsSpeechRate == rate)
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(if (isSel) Color(0xFF00E5FF) else Color.White.copy(alpha = 0.12f))
+                                                    .clickable { ttsHelper.setRate(rate) }
+                                                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                                            ) {
+                                                Text(
+                                                    text = "${rate}x",
+                                                    color = if (isSel) Color.Black else Color.White,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Big Audio Play/Stop Button
+                                if (isTtsPlaying) {
+                                    Button(
+                                        onClick = { ttsHelper.stop() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(44.dp)
+                                            .testTag("btn_tts_stop"),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Ferma Voce", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = { ttsHelper.speak(ocrText) },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFF00E5FF),
+                                            contentColor = Color.Black
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(44.dp)
+                                            .testTag("btn_tts_play"),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Ascolta Testo con Voce", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Share & Copy Action Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    val shareIntent = Intent().apply {
+                                        action = Intent.ACTION_SEND
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_SUBJECT, "Testo Scansionato Pagina $pageNumber")
+                                        putExtra(Intent.EXTRA_TEXT, ocrText)
+                                    }
+                                    context.startActivity(Intent.createChooser(shareIntent, "Condividi Testo Estratto"))
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(42.dp)
+                                    .testTag("btn_ortho_share_text"),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8))
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Condividi Testo", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("Testo OCR", ocrText))
+                                    Toast.makeText(context, "Testo copiato negli appunti!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier
+                                    .weight(0.9f)
+                                    .height(42.dp)
+                                    .testTag("btn_ortho_copy_text"),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Copia", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    ocrResult = null
+                                },
+                                modifier = Modifier
+                                    .weight(0.9f)
+                                    .height(42.dp)
+                                    .testTag("btn_ortho_rerun_ocr"),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.LightGray)
+                            ) {
+                                Icon(Icons.Default.DocumentScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Rifai", fontSize = 11.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Metadata Chips (Category, Date, Total)
+                        ocrResult?.let { meta ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF0284C7).copy(alpha = 0.25f))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("Tipo: ${meta.category}", color = Color(0xFF38BDF8), fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                }
+                                meta.detectedTotal?.let { total ->
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFF10B981).copy(alpha = 0.25f))
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Totale: $total", color = Color(0xFF34D399), fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                }
+                                meta.detectedDate?.let { date ->
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color.White.copy(alpha = 0.1f))
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Data: $date", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+
+                        // Editable Text Field
+                        OutlinedTextField(
+                            value = ocrText,
+                            onValueChange = { ocrText = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp)
+                                .testTag("input_ocr_extracted_text"),
+                            label = { Text("Testo Riconosciuto (${ocrText.length} car., ${ocrText.split(Regex("\\s+")).filter { it.isNotBlank() }.size} parole)") },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = Color(0xFF00E5FF),
+                                unfocusedBorderColor = Color.Gray,
+                                focusedContainerColor = Color(0xFF131A29),
+                                unfocusedContainerColor = Color(0xFF131A29),
+                                focusedLabelColor = Color(0xFF00E5FF),
+                                unfocusedLabelColor = Color.Gray
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+                }
+            }
+
+            // Filter Enhancement Selector (Visible when on Tab 0 or Tab 1)
+            if (currentTab != 2) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "Scegli Filtro Documento:",
+                        color = Color.LightGray,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        DocFilter.entries.forEach { filter ->
+                            val isSelected = filter == selectedFilter
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.12f))
+                                    .clickable {
+                                        selectedFilter = filter
+                                        ocrResult = null
+                                    }
+                                    .padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = filter.displayName,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) Color.White else Color.LightGray
+                                )
+                            }
                         }
                     }
                 }
@@ -719,29 +1050,45 @@ fun OrthorectifyScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .padding(bottom = bottomPadding + 14.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (currentTab == 0) {
-                    // Preview Button
+                    // Preview Filter Button
                     OutlinedButton(
                         onClick = { currentTab = 1 },
                         modifier = Modifier
                             .weight(1f)
-                            .height(54.dp)
+                            .height(52.dp)
                             .testTag("btn_show_filter_preview"),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8))
                     ) {
-                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Vedi Anteprima", fontSize = 13.sp)
+                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Filtri", fontSize = 12.sp, maxLines = 1)
+                    }
+
+                    // Extract OCR Button
+                    OutlinedButton(
+                        onClick = { currentTab = 2 },
+                        modifier = Modifier
+                            .weight(1.3f)
+                            .height(52.dp)
+                            .testTag("btn_go_to_ocr"),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00E5FF))
+                    ) {
+                        Icon(Icons.Default.DocumentScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Estrai OCR", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
 
                     // Direct Confirm Button
                     Button(
                         onClick = {
+                            ttsHelper.stop()
                             val rectified = PerspectiveCorrection.orthorectify(sourceBitmap, quad)
-                            onConfirmStraightened(rectified, selectedFilter)
+                            onConfirmStraightened(rectified, selectedFilter, null)
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
@@ -749,48 +1096,100 @@ fun OrthorectifyScreen(
                         ),
                         modifier = Modifier
                             .weight(1.2f)
-                            .height(54.dp)
+                            .height(52.dp)
                             .testTag("btn_confirm_orthorectify"),
-                        shape = RoundedCornerShape(16.dp)
+                        shape = RoundedCornerShape(14.dp)
                     ) {
-                        Icon(Icons.Default.Done, contentDescription = null, modifier = Modifier.size(20.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Raddrizza & Salva", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.Done, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Salva", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
-                } else {
+                } else if (currentTab == 1) {
                     // Back to Corners
                     OutlinedButton(
                         onClick = { currentTab = 0 },
                         modifier = Modifier
                             .weight(1f)
-                            .height(54.dp),
-                        shape = RoundedCornerShape(16.dp),
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
                     ) {
-                        Icon(Icons.Default.CropFree, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Modifica Angoli", fontSize = 13.sp)
+                        Icon(Icons.Default.CropFree, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Angoli", fontSize = 12.sp)
+                    }
+
+                    // Extract OCR Button
+                    OutlinedButton(
+                        onClick = { currentTab = 2 },
+                        modifier = Modifier
+                            .weight(1.3f)
+                            .height(52.dp)
+                            .testTag("btn_preview_to_ocr"),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00E5FF))
+                    ) {
+                        Icon(Icons.Default.DocumentScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Estrai OCR", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
 
                     // Confirm from Preview
                     Button(
                         onClick = {
+                            ttsHelper.stop()
                             val rectified = PerspectiveCorrection.orthorectify(sourceBitmap, quad)
-                            onConfirmStraightened(rectified, selectedFilter)
+                            onConfirmStraightened(rectified, selectedFilter, null)
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary
                         ),
                         modifier = Modifier
-                            .weight(1.3f)
-                            .height(54.dp)
+                            .weight(1.2f)
+                            .height(52.dp)
                             .testTag("btn_confirm_from_preview"),
-                        shape = RoundedCornerShape(16.dp)
+                        shape = RoundedCornerShape(14.dp)
                     ) {
-                        Icon(Icons.Default.Done, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.Done, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Salva", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    // In Tab 2: OCR & TTS
+                    OutlinedButton(
+                        onClick = { currentTab = 0 },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                    ) {
+                        Icon(Icons.Default.CropFree, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Angoli", fontSize = 12.sp)
+                    }
+
+                    // Confirm with OCR text
+                    Button(
+                        onClick = {
+                            ttsHelper.stop()
+                            val rectified = PerspectiveCorrection.orthorectify(sourceBitmap, quad)
+                            onConfirmStraightened(rectified, selectedFilter, ocrText)
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        modifier = Modifier
+                            .weight(1.8f)
+                            .height(52.dp)
+                            .testTag("btn_confirm_with_ocr"),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Default.Done, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Conferma Documento", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Text("Salva con Testo OCR", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }

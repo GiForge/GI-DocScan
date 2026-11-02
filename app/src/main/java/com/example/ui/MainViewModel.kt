@@ -84,6 +84,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _sessionPagePaths = MutableStateFlow<List<String>>(emptyList())
     val sessionPagePaths: StateFlow<List<String>> = _sessionPagePaths.asStateFlow()
 
+    private val _sessionOcrText = MutableStateFlow("")
+    val sessionOcrText: StateFlow<String> = _sessionOcrText.asStateFlow()
+
     val documents: StateFlow<List<ScannedDocument>> = combine(
         repository.allDocuments,
         _searchQuery,
@@ -201,9 +204,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Called when the user confirms orthorectification in OrthorectifyScreen.
      * Applies enhancement filter, saves the straightened page to disk,
-     * and appends to the session or to an existing document.
+     * attaches any extracted OCR text, and appends to the session or to an existing document.
      */
-    fun confirmRectifiedPage(rectifiedBitmap: Bitmap, filter: DocFilter, targetDocId: Long?) {
+    fun confirmRectifiedPage(
+        rectifiedBitmap: Bitmap,
+        filter: DocFilter,
+        targetDocId: Long?,
+        extractedOcrText: String? = null
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             _scanState.value = ScanProcessingState(isProcessing = true, statusMessage = "Salvataggio pagina raddrizzata...")
             try {
@@ -216,9 +224,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (existing != null) {
                         val currentPages = existing.getAllPagePaths().toMutableList()
                         currentPages.add(filePath)
+                        val updatedText = if (!extractedOcrText.isNullOrBlank()) {
+                            if (existing.rawText.isBlank()) extractedOcrText else "${existing.rawText}\n\n$extractedOcrText"
+                        } else existing.rawText
+
                         val updated = existing.copy(
                             pagesJson = ScannedDocument.encodePages(currentPages),
-                            pageCount = currentPages.size
+                            pageCount = currentPages.size,
+                            rawText = updatedText
                         )
                         repository.updateDocument(updated)
                     }
@@ -231,6 +244,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val currentList = _sessionPagePaths.value.toMutableList()
                     currentList.add(filePath)
                     _sessionPagePaths.value = currentList
+
+                    if (!extractedOcrText.isNullOrBlank()) {
+                        _sessionOcrText.value = if (_sessionOcrText.value.isBlank()) {
+                            extractedOcrText
+                        } else {
+                            "${_sessionOcrText.value}\n\n$extractedOcrText"
+                        }
+                    }
 
                     _scanState.value = ScanProcessingState(isProcessing = false)
                     withContext(Dispatchers.Main) {
@@ -255,6 +276,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearScanSession() {
         _sessionPagePaths.value = emptyList()
+        _sessionOcrText.value = ""
         _currentScreen.value = Screen.Home
     }
 
@@ -269,12 +291,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             _scanState.value = ScanProcessingState(isProcessing = true, statusMessage = if (runOcr) "Esecuzione OCR sulle pagine..." else "Salvataggio documento...")
             try {
-                var extractedText = ""
+                var extractedText = _sessionOcrText.value
                 var summary = ""
                 var entitiesFormatted = ""
                 var autoCategory = category
 
-                if (runOcr) {
+                if (runOcr && extractedText.isBlank()) {
                     val fullTextBuilder = StringBuilder()
                     for ((idx, path) in pages.withIndex()) {
                         val bmp = ImageProcessing.loadBitmapFromPath(path)
@@ -294,9 +316,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     extractedText = fullTextBuilder.toString().trim()
-                    if (extractedText.isNotBlank()) {
-                        summary = DocAiService.summarizeDocument(extractedText)
-                    }
+                }
+
+                if (extractedText.isNotBlank()) {
+                    summary = DocAiService.summarizeDocument(extractedText)
                 }
 
                 val finalTitle = docTitle.ifBlank {

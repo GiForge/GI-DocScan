@@ -66,8 +66,8 @@ fun AppNavigation(viewModel: MainViewModel) {
             onBack = {
                 viewModel.navigateBack()
             },
-            onConfirmStraightened = { rectifiedBmp, filter ->
-                viewModel.confirmRectifiedPage(rectifiedBmp, filter, screen.targetDocId)
+            onConfirmStraightened = { rectifiedBmp, filter, extractedText ->
+                viewModel.confirmRectifiedPage(rectifiedBmp, filter, screen.targetDocId, extractedText)
             }
         )
         is Screen.ScanSession -> ScanSessionScreen(viewModel = viewModel)
